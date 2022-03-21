@@ -1,6 +1,7 @@
 """
 Pure ion chromatograms extraction via HDBSCAN
 """
+
 import time,os,shutil,time
 import numpy as np
 import hdbscan
@@ -83,10 +84,12 @@ def hdbscan_lc(choose_spec, choose_rt, h_intensity_rt, max_int_ms, rt_inv, mis_g
             choose_spec_1= choose_spec_1[choose_1_rt_index,:]
     return choose_spec_1
 
-def PIC(inputfile, file_t, min_intensity=200, mass_inv=1, rt_inv=15, mis_gap=3):
+def PIC(inputfile, min_intensity=200, mass_inv=1, rt_inv=15, mis_gap=3, max_items=30000):
     ms,intensity,rt,rt_mean_interval=readms(inputfile)
     rt_inv = int(rt_inv/rt_mean_interval)
     scan = len(rt)
+    
+    pic_list = {}
     while True:
         max_intensity_rt,max_intensity_intensity = maxI(intensity)
         if max_intensity_intensity<min_intensity:
@@ -98,7 +101,12 @@ def PIC(inputfile, file_t, min_intensity=200, mass_inv=1, rt_inv=15, mis_gap=3):
             else:
                 choose_spec_2 = hdbscan_lc(choose_spec,choose_rt,h_intensity_rt,max_int_ms,rt_inv,mis_gap)
                 #np.savetxt('%s/%s_%s_%s_1.txt' % (file_t,max_int_ms,h_intensity_rt,max_intensity_intensity),choose_spec)
-            np.savetxt('%s/%s_%s_%s_%s_%s_%s.txt' % (file_t,max_int_ms,h_intensity_rt,max_intensity_intensity,choose_spec_2[0,0],choose_spec_2[-1,0],choose_spec_2.shape[0]),choose_spec_2)                
+            
+            # np.savetxt('%s/%s_%s_%s_%s_%s_%s.txt' % (file_t,max_int_ms,h_intensity_rt,max_intensity_intensity,choose_spec_2[0,0],choose_spec_2[-1,0],choose_spec_2.shape[0]), choose_spec_2)                
+            if len(choose_spec_2) < 2:
+                continue
+            
+            pic_list['%s_%s_%s_%s_%s_%s' % (max_int_ms,h_intensity_rt,max_intensity_intensity,choose_spec_2[0,0],choose_spec_2[-1,0],choose_spec_2.shape[0])] = choose_spec_2
             del_1_index = rt.index(choose_spec_2[0,0])
             del_2_index = rt.index(choose_spec_2[-1,0])+1
             del_not = np.setdiff1d(np.array(rt[del_1_index:del_2_index]),choose_spec_2[:,0])
@@ -110,8 +118,10 @@ def PIC(inputfile, file_t, min_intensity=200, mass_inv=1, rt_inv=15, mis_gap=3):
                 else:
                     index = index-del_not_count
                     intensity[del_ms_index] = intensity[del_ms_index][ms[del_ms_index]!=del_all_ms[index]]
-                    ms[del_ms_index] = ms[del_ms_index][ms[del_ms_index]!=del_all_ms[index]]
-    return rt_mean_interval
+                    ms[del_ms_index] = ms[del_ms_index][ms[del_ms_index]!=del_all_ms[index]]     
+        if len(pic_list) >= max_items:
+            break         
+    return rt_mean_interval, pic_list
 
 
 def lc_ms_peak(data, scales, min_snr, data_p, intensity):
@@ -123,66 +133,54 @@ def lc_ms_peak(data, scales, min_snr, data_p, intensity):
     return  list(peak_list)
 
 
-def to_deque(file_in, file_out, min_snr, rt_v, intensity):
+def to_deque(pic_list, min_snr, rt_v, intensity):
     number = 10
     width = np.arange(1,60)
-    files = os.listdir(file_in)
+    files = list(pic_list.keys())
     peak_list = []
     alls = []
     for each in files:
         each = map(float,each[:-4].split('_'))
         alls.append(list(each))
-    frame = np.array(alls)
-    files = np.array(files)[np.argsort(frame[:,0])]
-    frame = frame[np.argsort(frame[:,0])]
-    frame_mz = frame[:,0]
-    l_frame = frame.shape[0]
-    i = 0
-    count = []
-    while i<l_frame:
-        if i not in count:
-            mz = frame_mz[i]
-            mz_range = mz +0.1
-            p_frame =  frame[i:,:][frame_mz[i:]<mz_range]
-            length = p_frame.shape[0]
-            if length >1:
-                pre = p_frame[0,3]
-                dif = p_frame[0,4]
-                condition = np.array(list(p_frame[:,3]-dif) + list(pre-p_frame[:,4]))
-                if condition[(condition>0)&(condition<rt_v)].shape[0] >0 :
-                    file_sep = deque()
-                    file_sep.append(0)
-                    a = np.where(((pre-p_frame[:,4])>0)&((pre-p_frame[:,4])<rt_v))[0]
-                    while a.shape[0]>0 and p_frame[p_frame[:,3]==pre].shape[0]<2:
-                        file_sep.appendleft(a[0])
-                        pre = p_frame[a[0],3]
-                        a = np.where(((pre-p_frame[:,4])>0)&((pre-p_frame[:,4])<rt_v))[0]
-                    b = np.where(((p_frame[:,3]-dif)>0)&((p_frame[:,3]-dif)<rt_v))[0]
-                    while b.shape[0]>0 and p_frame[p_frame[:,4]==dif].shape[0]<2 :
-                        file_sep.append(b[0])
-                        dif = p_frame[b[0],4]
-                        b = np.where(((p_frame[:,3]-dif)>0)&((p_frame[:,3]-dif)<rt_v))[0]
-                    new = np.zeros(6)
-                    new[:3] = p_frame[file_sep[np.argmax(p_frame[file_sep,2])],:3]
-                    index = [m+i for m in file_sep]
-                    mass = np.vstack([np.loadtxt(file_in+"/"+file_i) for file_i in list(files[index])])
-                    new[3] = mass[0,0]
-                    new[4] = mass[-1,0]
-                    new[5] = mass.shape[0]
-                    if new[5] >=number:
-                        peak_list.extend(lc_ms_peak(mass,width,min_snr,True,intensity))                       
-                    count.extend(index)
-                else:
-                    if frame[i,5]>=number:
-                        peak_list.extend(lc_ms_peak(file_in+"/"+files[i],width,min_snr,False,intensity))
-            else:
-                if frame[i,5]>=number:
-                    peak_list.extend(lc_ms_peak(file_in+"/"+files[i],width,min_snr,False,intensity))
+    frame = pd.DataFrame(alls)
+    frame.columns = ['mz', 'rt', 'intensity', 'rt_l', 'rt_r']
+    frame = frame.sort_values(by = 'mz').reset_index()
+    counts = []
+    
+    for i in frame.index:
+        mz = frame.loc[i, 'mz']
+        mz_range = mz + 0.1
+        p_frame =  frame[np.abs(frame['mz'] < mz_range)]
+        length = p_frame.shape[0]
+        
+        if length > 1:
+            rt_l = frame.loc[i, 'rt_l']
+            rt_r = frame.loc[i, 'rt_r']
+            condition_1 = condition_2 = True
+            while True:    
+                if condition_1:
+                    w1 = p_frame[np.abs(p_frame['rt_l'] - rt_r) < rt_v]
+                    if len(w1) > 0:
+                        w1 = w1.iloc[0,:]
+                        rt_r = w1['rt_r']
+                    else:
+                        condition_1 = False
+                        
+                if condition_2:
+                    w2 = p_frame[np.abs(p_frame['rt_r'] - rt_l) < rt_v]
+                    if len(w2) > 0:
+                        w2 = w2.iloc[0,:]
+                        rt_l = w2['rt_l']
+                    else:
+                        condition_2 = False
                 
-        i+=1
-    peak_list = pd.DataFrame(peak_list,columns = ['mz','rt','intensity','rt1','rt2','signal','snr','ind','shape'])
-    peak_list.to_csv('%s/%s.csv' % (file_out,os.path.splitext(os.path.basename(file_in))[0]))
-    shutil.rmtree(file_in)
+                if (not condition_1) and (not condition_2):
+                    break
+        
+    
+
+
+
     return peak_list
 
 
@@ -218,11 +216,17 @@ def hpic(file_in, file_out, min_intensity=250, min_snr=3, mass_inv=1, rt_inv=15)
                 # 7 -> index of the peak
                 # 8 -> length of the peak
     """
-    file_t = os.path.splitext(os.path.basename(file_in))[0]
-    file_t = '%s/%s' % (file_out,file_t)
-    try:
-        os.makedirs('%s' % file_t )
-    except:
-        pass
-    interval = PIC(file_in,file_t,min_intensity)*1.5
-    return to_deque(file_t,file_out,min_snr,interval,min_intensity)
+
+    interval, pic_list = PIC(file_in, min_intensity)
+    interval *= 1.5
+    return to_deque(pic_list, min_snr, interval, min_intensity)
+
+
+if __name__ == '__main__':
+    
+    min_intensity = 5000
+    file_in = "D:/project/PeakEva/data/600mix_pos.mzML"
+    
+    interval, pic_list = PIC(file_in, min_intensity)
+    rt_v = 1.5 * interval
+    
